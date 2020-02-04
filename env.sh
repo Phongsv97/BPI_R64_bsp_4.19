@@ -1,0 +1,12 @@
+export ARCH=arm
+export BOARD=BPI-R64-console
+export SOC=mt7622
+export MACH=mt7622_evb
+export service=linux-4.19
+export CROSS_COMPILE=arm-linux-gnueabihf-
+export UBOOT_CONFIG=mt7622_evb_config
+export KERNEL_CONFIG=mt7622_evb_bpi_defconfig
+export LICHEE_PLATFORM="linux"
+export TOPDIR=/home/phong/workspace/BPI-R64-bsp-4.19
+export TARGET_PLATFORM=mediatek
+export TARGET_PRODUCT=bpi-r64

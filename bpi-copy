@@ -1,0 +1,595 @@
+#!/bin/bash
+#GPL
+#set -x
+BPILICENSE="GPLv2 or any later version"
+BPICMD="bpi-copy"
+BPICMDVERSION="v1.3.4(github)"
+BPIOPT="$*"
+
+BOARD=$(bpi-hw)
+
+CONFFILE=""
+#BPIBOARD="bpi-m3"
+#support bpi-copy -c boardlist.conf
+BPIBOARD=""
+
+SRC=""
+DST=""
+SIZE=""
+
+DEVICE=""
+IMGFILE=""
+
+TMPFILE=/tmp/.${BPICMD}.tmp.$$
+
+LOOP_DEV="/dev/loop0"
+LOOP_PART_BOOT="${LOOP_DEV}p1"
+LOOP_PART_SYS="${LOOP_DEV}p2"
+
+#
+# BPIFILE / BPIURL
+#
+BPIFILE="$HOME/.${BPICMD}.lst"
+#BPI-ROOT.lst
+#
+## Hello from Google,
+## On Aug 31, 2016, we will discontinue serving content via 
+## googledrive.com/host/[id] and the webpages will not be accessible anymore.
+#
+#BPIURL="https://googledrive.com/host/0B_YnvHgh2rwjVE10U3U0Q0NCdWM"
+BPIURL="https://github.com/BPI-SINOVOIP/BPI-files/raw/master/others/for-bpi-tools/BPI-ROOT.lst"
+BPIURLNEW=""
+#
+## URLBASE
+#
+URLBASE="https://github.com/BPI-SINOVOIP/BPI-files/raw/master"
+#
+## URLCONF
+#
+URLCONF="${URLBASE}/others/for-bpi-tools/conf"
+#
+# update / download
+#
+F_UPDATE=NO
+F_DOWNLOAD=NO
+F_GOOGLE=YES
+
+######################################################
+for IN in "$@"
+do
+  if [[ "$IN" == *"="* ]] ; then
+    P=${IN%%=*}
+    V=${IN##*=}
+    echo "INFO: $P=${V:-(empty)}"
+    eval $P=$V
+  fi
+done
+######################################################
+
+short_usage() {
+cat - >&2 <<EOF
+${BPICMD}(${BPICMDVERSION}), bananapi image & disk tools
+
+Usage: ${BPICMD} [OPTIONS]...
+       ${BPICMD} [ --help | -v | --version ]
+       ${BPICMD} IMGFILE
+       ${BPICMD} IMGDIR
+       ${BPICMD} IMGFILE DEVICE
+       ${BPICMD} DEVICE IMGFILE
+
+EOF
+  return 0
+}
+
+usage() {
+cat - >&2 <<EOF
+${BPICMD}(${BPICMDVERSION}), bananapi image & disk tools
+
+Usage: ${BPICMD} [OPTIONS]...
+       ${BPICMD} [ --help | -v | --version ]
+       ${BPICMD} IMGFILE
+       ${BPICMD} IMGDIR
+       ${BPICMD} IMGFILE DEVICE
+       ${BPICMD} DEVICE IMGFILE
+
+Options:
+
+  -c, --config                    config file
+  -i, --imgfile IMGFILE           image file
+  -d, --device device             device
+  -h, --help                      Print usage
+  -v, --version                   Print version information and quit
+
+ex:
+  sudo ${BPICMD}
+  sudo ${BPICMD} xxx.img.zip
+  sudo ${BPICMD} xxx.img.zip /dev/mmcblk1
+  sudo ${BPICMD} xxx.img /dev/sdX
+  sudo ${BPICMD} -c bpi-m2u.conf -i xxx.img.zip -d /dev/sdX
+  sudo ${BPICMD} -c bpi-m3.conf URLBASE="ftp://pi:bananapi@127.0.0.1/BPI-files"
+
+EOF
+  exit 1
+}
+
+get_conffile() {
+  CONFDIRS=". board os tools pkg"
+  FILE=$1
+  if [ ! -f "${FILE}" ] ; then
+    echo "Wait for download $FILE ..."
+    for IN in ${CONFDIRS} ; do
+      U="${URLCONF}/${IN}/${FILE}"
+      curl -s -L $U > $FILE
+      eval `grep "^BPICONF" $FILE`
+      if [ "x$FILE" == "x$BPICONF" ] ; then
+        echo $U
+        echo "OK!!\n"
+        break 
+      fi
+    done
+  fi
+}
+
+get_bpi_github() {
+  FILE=$1
+  DIRS=". SD/BPI-ROOT SD/BPI-BOOT SD/100MB rootfs"
+  if [ ! -f "${FILE}" ] ; then
+    echo "Wait for download $FILE ..."
+    for D in ${DIRS} ; do
+      echo -n "."
+      U="${URLBASE}/${D}/${FILE}"
+      #echo $U
+      curl -s -L $U > $FILE
+      SHELLCMD=$?
+      if [ ! $SHELLCMD -eq 0 ] ; then
+        rm -f $FILE
+        continue
+      fi
+      #check file
+      ERRORMSG=("error" "Not Found")
+      for CHECK in "${ERRORMSG[@]}" ; do
+        if [ ! -f "${FILE}" ] ; then
+           break
+        fi
+        #echo "grep ${CHECK} $FILE "
+        grep "${CHECK}" $FILE 2>&1 >/dev/null
+        SHELLCMD=$?
+        if [ $SHELLCMD -eq 0 ] ; then
+          rm -f $FILE
+        fi
+      done
+      if [ -f "${FILE}" ] ; then
+        echo $U
+        echo "OK!!\n"
+        break
+      fi
+    done
+  fi
+}
+
+backup_data()
+{
+  if [ ! -z ${USER_BACKUP} ] ; then
+#    echo "${BPICMD}: do ${USER_BACKUP}() ..."
+    ${USER_BACKUP}
+    return $?
+  fi
+#  echo "${BPICMD}: backup_data():  you can add USER_BACKUP() to .conf"
+}
+
+restore_data()
+{
+  if [ ! -z ${USER_RESTORE} ] ; then
+#    echo "${BPICMD}: do ${USER_RESTORE}() ..."
+    ${USER_RESTORE}
+    return $?
+  fi
+#  echo "${BPICMD}: restore_data():  you can add USER_RESTORE() to .conf"
+}
+
+list_images()
+{
+	DIR=`pwd`
+	if [[ -d ${IMGFILE} ]] ; then DIR=${IMGFILE} ; fi
+	find $DIR /usr/lib/u-boot/bananapi | sort > $TMPFILE
+	echo "bpi images: (*.img.zip)"
+	for IN in `cat $TMPFILE | grep '\.img.zip$'`
+	do
+		echo $IN
+	done
+	echo "bpi images: (*.img)"
+	for IN in `cat $TMPFILE | grep '\.img$'`
+	do
+		echo $IN
+	done
+	echo "bpi images: (*.img.gz)"
+	for IN in `cat $TMPFILE | grep '\.img.gz$'`
+	do
+		echo $IN
+	done
+	echo "xz images: (*.xz)"
+	for IN in `cat $TMPFILE | grep '\.xz$'`
+	do
+		echo $IN
+	done
+	echo "zip images: (*.zip)"
+	for IN in `cat $TMPFILE | grep '\.zip$'`
+	do
+		echo $IN
+	done
+	echo "raw images: (*.raw)"
+	for IN in `cat $TMPFILE | grep '\.raw$'`
+	do
+		echo $IN
+	done
+	rm -f $TMPFILE
+}
+
+list_disks()
+{
+	echo
+	echo "Disks: (lsblk | grep disk)"
+	lsblk | grep disk
+	echo
+	echo "Disks: (fdisk -l | grep Disk | grep bytes)"
+	fdisk -l | grep Disk | grep bytes
+}
+
+umount_device()
+{
+	F_RM=`lsblk -o RM $DEVICE | grep 1`
+	if [ -z "$F_RM" ] ; then
+		case $DEVICE in
+		*mmcblk*)
+			echo "INFO: $DEVICE : SD/eMMC !!"
+			;;
+		*)
+			echo "INFO: $DEVICE NOT THE removable device!! EXIT!!"
+			exit 1
+			;;
+		esac
+	fi
+	echo "umount device: $DEVICE"
+	for IN in `df -k | awk '{ print $1 }' | grep "${DEVICE}"`
+	do
+		PART=$IN
+		echo umount $PART
+                (umount $PART) 2>/dev/null
+	done
+}
+
+requires_root() {
+        if [ "$(id -u)" -ne 0 ]; then
+                echo >&1 "ERROR: This command can only be used by root."
+                exit 1
+        fi
+}
+
+blue_led_on()
+{
+	echo "*** start COPY (blue led on ) ....."
+	if [ -f /sys/class/leds/blue_led/trigger ]; then
+		echo default-on > /sys/class/leds/blue_led/trigger
+	fi
+}
+
+blue_led_off()
+{
+	echo "***  end  COPY (blue led off) ....."
+	if [ -f /sys/class/leds/blue_led/trigger ]; then
+		echo none > /sys/class/leds/blue_led/trigger
+	fi
+}
+
+bpi_copy_image()
+{
+	echo "=============================================================="
+	echo IMGFILE=$IMGFILE
+	echo "=============================================================="
+	case ${IMGFILE} in
+	*.zip)
+		echo zip
+		unzip -p $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*.img|*.iso)
+		echo img
+#		(dd if=$IMGFILE of=$DEVICE bs=10M status=noxfer ) > /dev/null 2>&1
+		dd if=$IMGFILE bs=10M | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*.raw)
+		echo raw
+		dd if=$IMGFILE bs=10M | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*.img.gz)
+		echo img.gz
+#		( gunzip -c $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer ) > /dev/null 2>&1
+		gunzip -dc $IMGFILE | pv | dd of=$DEVICE bs=1024 seek=8 status=noxfer
+		;;
+	*.xz)
+		echo xz
+		unxz -c $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*.7z)
+		echo 7z
+		7z x -so $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*)
+		echo default
+		;;
+	esac
+	sync;sync;sync
+}
+
+bpi_copy_disk()
+{
+	echo "=============================================================="
+	echo IMGFILE=$IMGFILE
+	echo "=============================================================="
+	case ${IMGFILE} in
+	*.zip)
+		echo zip
+		if [ -z ${SIZE} ] ; then
+		echo "dd if=$DEVICE bs=1M | pv | zip $IMGFILE -"
+		dd if=$DEVICE bs=1M | pv | zip $IMGFILE -
+		else
+		echo "dd if=$DEVICE bs=1M count=$SIZE | pv | zip $IMGFILE -"
+		dd if=$DEVICE bs=1M count=$SIZE | pv | zip $IMGFILE -
+		fi
+		;;
+	*.img)
+		echo img
+		if [ -z ${SIZE} ] ; then
+		dd if=$DEVICE bs=10M | pv | dd of=$IMGFILE bs=10M status=noxfer
+		else
+echo		"dd if=$DEVICE bs=1M count=$SIZE | pv | dd of=$IMGFILE bs=10M status=noxfer"
+		dd if=$DEVICE bs=1M count=$SIZE | pv | dd of=$IMGFILE bs=10M status=noxfer
+		fi
+		;;
+	*.raw)
+		echo raw
+		dd if=$DEVICE bs=10M | pv | dd of=$IMGFILE bs=10M status=noxfer
+		;;
+	*.img.gz)
+		echo img.gz
+#		( gunzip -c $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer ) > /dev/null 2>&1
+#		gunzip -dc $IMGFILE | pv | dd of=$DEVICE bs=1024 seek=8 status=noxfer
+		;;
+	*.xz)
+		echo xz
+#		unxz -c $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*.7z)
+		echo 7z
+#		7z x -so $IMGFILE | pv | dd of=$DEVICE bs=10M status=noxfer
+		;;
+	*)
+		echo default
+		;;
+	esac
+	sync;sync;sync
+}
+
+bpi_imagetodisk() 
+{
+	short_usage
+if [ -f ${IMGFILE} ] ; then
+	echo "Warning: Try to write $IMGFILE to BOOTDISK $DEVICE"
+	requires_root
+	echo "=============================================================="
+STARTTIME=`date +%s`
+	date
+	blue_led_on
+	umount_device
+	backup_data
+	bpi_copy_image
+	restore_data
+	(eject $DEVICE) > /dev/null 2>&1
+	blue_led_off
+	date
+ENDTIME=`date +%s`
+RUNTIMESEC=$((ENDTIME-STARTTIME))
+MIN=$(((RUNTIMESEC)/60))
+SEC=$(((RUNTIMESEC)%60))
+	echo "=============================================================="
+echo "RUNTIME" "$MIN:$SEC"
+	echo "OK!! You can remove the BOOTDISK $DEVICE now!!"
+	exit 0
+fi
+}
+
+bpi_disktoimage() 
+{
+	short_usage
+if [ -b ${DEVICE} ] ; then
+	echo "Info: Try to write $DEVICE to BOOTDISK $IMGFILE"
+	requires_root
+	echo "=============================================================="
+STARTTIME=`date +%s`
+	date
+#	blue_led_on
+	umount_device
+	bpi_copy_disk
+	(eject $DEVICE) > /dev/null 2>&1
+#	blue_led_off
+	date
+ENDTIME=`date +%s`
+RUNTIMESEC=$((ENDTIME-STARTTIME))
+MIN=$(((RUNTIMESEC)/60))
+SEC=$(((RUNTIMESEC)%60))
+	echo "=============================================================="
+echo "RUNTIME" "$MIN:$SEC"
+	echo "OK!! You can remove the BOOTDISK $DEVICE now!!"
+	exit 0
+fi
+}
+
+update_copymode()
+{
+#null
+	echo SRC=$SRC
+	echo DST=$DST
+	if [ -z ${SRC} ] ; then
+		echo COPYMODE=usage
+		COPYMODE=usage
+		return
+	fi
+#directory
+	if [ -d ${SRC} ] ; then
+		echo COPYMODE=usage
+		COPYMODE=usage
+		return
+	fi
+#block special
+	if [ -b ${SRC} ] ; then
+		echo COPYMODE=disktoimage
+		COPYMODE=disktoimage
+		DEVICE=$SRC
+		IMGFILE=$DST
+		return
+	fi
+#block special
+	if [ -b ${DST} ] ; then
+		echo COPYMODE=imagetodisk
+		COPYMODE=imagetodisk
+		return
+	fi
+	echo COPYMODE=${COPYMODE}
+}
+
+
+bpi_copy_main() 
+{
+#check COPYMODE: imagetodisk / disktoimage / default
+	case ${COPYMODE} in
+	imagetodisk)
+		echo imagetodisk
+		bpi_imagetodisk
+		;;
+	disktoimage)
+		echo disktoimage
+		bpi_disktoimage
+		;;
+	*)
+		echo default
+		short_usage
+		list_images
+		list_disks
+		exit 0
+		;;
+	esac
+}
+
+
+#step 0: main/getopt
+BPICMDOPT="c:r:U:b:i:d:S:D:s:B:uGvh"
+
+GETOPTEST=`getopt --version`
+case $GETOPTEST in
+getopt*) # GNU getopt
+  BPI_TEMP=`getopt -l config: -l root: -l uboot: -l boot: -l imgfile: -l device: -l src: -l dst: -l size: -l update -l download -l BOOTSIZE: -l version -l help -- +${BPICMDOPT} "$@"`
+  ;;
+*) # POSIX getopt ?
+  BPI_TEMP=`getopt ${BPICMDOPT} "$@"`
+  ;;
+esac
+
+if test "$?" -ne 0; then
+  usage
+fi
+
+eval set -- "$BPI_TEMP"
+
+BPIDOPTS=""
+
+while test "X$1" != "X--"; do
+  case "$1" in
+    -c|--config)
+       shift
+       CONFFILE="$1"
+       echo "CONFFILE=${CONFFILE}"
+       #
+       ## run config file
+       #
+       get_conffile ${CONFFILE}
+       if [ -f "${CONFFILE}" ] ; then
+         . ${CONFFILE}
+       fi
+       #
+       ;;
+    -r|--root)
+       shift
+       ROOTFILE="$1"
+       echo "ROOTFILE=${ROOTFILE}"
+       ;;
+    -U|--uboot)
+       shift
+       UBOOTIMGGZ="$1"
+       echo "UBOOTIMGGZ=${UBOOTIMGGZ}"
+       ;;
+    -b|--boot)
+       shift
+       BOOTFILE="$1"
+       echo "BOOTFILE=${BOOTFILE}"
+       ;;
+    -i|--imgfile)
+       shift
+       IMGFILE="$1"
+       echo "IMGFILE=${IMGFILE}"
+       #
+       SRC=${IMGFILE}
+       ;;
+    -d|--device)
+       shift
+       DEVICE="$1"
+       echo "DEVICE=${DEVICE}"
+       #
+       DST=${DEVICE}
+       ;;
+    -S|--src)
+       shift
+       SRC="$1"
+       echo "SRC=${SRC}"
+       ;;
+    -D|--dst)
+       shift
+       DST="$1"
+       echo "DST=${DST}"
+       ;;
+    -u|--update)
+       echo "update"
+       F_UPDATE=YES
+       ;;
+    -G|--download)
+       echo "download"
+       F_DOWNLOAD=YES
+       ;;
+    -v|--version)
+       short_usage
+       exit 0
+       ;;
+    -h|--help)
+       usage
+       ;;
+  esac
+  shift
+done
+
+shift #get rid of the '--'
+
+NEW_SRC=$1
+if [[ $NEW_SRC != "" ]]; then SRC=${NEW_SRC} ; fi
+if [[ $IMGFILE == "" ]]; then IMGFILE=$SRC ; fi
+
+NEW_DST=$2
+if [[ $NEW_DST != "" ]]; then DST=$2 ; fi
+if [[ $DEVICE == "" ]]; then DEVICE=$DST ; fi
+if [[ $DEVICE == "" ]]; then DEVICE="/dev/mmcblk1" ; fi
+
+if [[ $SIZE == "" ]]; then SIZE=$3 ; fi
+#if [[ $SIZE == "" ]]; then SIZE="7456"; fi ;#DONOT SET for backup all disk
+
+#step 1: main
+COPYMODE=usage
+update_copymode
+bpi_copy_main 
+
